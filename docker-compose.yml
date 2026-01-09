@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: citypulse-db
+    environment:
+      POSTGRES_USER: citypulse
+      POSTGRES_PASSWORD: citypulse_dev
+      POSTGRES_DB: citypulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citypulse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./BE
+      dockerfile: Dockerfile
+    container_name: citypulse-backend
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://citypulse:citypulse_dev@postgres:5432/citypulse
+      ML_SERVICE_URL: http://ml:5001
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./BE/src:/app/src
+
+  ml:
+    build:
+      context: ./Model
+      dockerfile: Dockerfile
+    container_name: citypulse-ml
+    environment:
+      FLASK_ENV: development
+      DATABASE_URL: postgres://citypulse:citypulse_dev@postgres:5432/citypulse
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./Model:/app
+
+  frontend:
+    build:
+      context: ./FE
+      dockerfile: Dockerfile
+    container_name: citypulse-frontend
+    environment:
+      VITE_API_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
