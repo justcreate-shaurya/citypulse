@@ -17,12 +17,47 @@ function calculateStressIndex(sensors) {
   ));
 }
 
+function validateSensorData(data) {
+  const errors = [];
+  
+  if (!data.node_id || typeof data.node_id !== 'string') {
+    errors.push('node_id is required and must be a string');
+  }
+  
+  if (data.noise === undefined || data.noise === null || isNaN(data.noise)) {
+    errors.push('noise is required and must be a number');
+  } else if (data.noise < 0 || data.noise > 150) {
+    errors.push('noise must be between 0 and 150 dB');
+  }
+  
+  if (data.temperature === undefined || data.temperature === null || isNaN(data.temperature)) {
+    errors.push('temperature is required and must be a number');
+  } else if (data.temperature < -10 || data.temperature > 60) {
+    errors.push('temperature must be between -10 and 60 C');
+  }
+  
+  if (data.air_quality === undefined || data.air_quality === null || isNaN(data.air_quality)) {
+    errors.push('air_quality is required and must be a number');
+  } else if (data.air_quality < 0 || data.air_quality > 500) {
+    errors.push('air_quality must be between 0 and 500 AQI');
+  }
+  
+  if (data.crowd_density === undefined || data.crowd_density === null || isNaN(data.crowd_density)) {
+    errors.push('crowd_density is required and must be a number');
+  } else if (data.crowd_density < 0 || data.crowd_density > 100) {
+    errors.push('crowd_density must be between 0 and 100');
+  }
+  
+  return errors;
+}
+
 exports.ingest = async (req, res) => {
   try {
     const { node_id, noise, temperature, air_quality, crowd_density } = req.body;
     
-    if (!node_id) {
-      return res.status(400).json({ error: 'node_id required' });
+    const validationErrors = validateSensorData({ node_id, noise, temperature, air_quality, crowd_density });
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ error: 'Validation failed', details: validationErrors });
     }
     
     const stress_index = calculateStressIndex({ noise, temperature, air_quality, crowd_density });
