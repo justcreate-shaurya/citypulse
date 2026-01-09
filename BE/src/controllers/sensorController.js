@@ -63,6 +63,17 @@ exports.ingest = async (req, res) => {
   }
 };
 
+function generateExplanation(stressIndex, sensors) {
+  if (stressIndex > 80) {
+    if (sensors.noise > 85) return "Critical noise levels detected. Likely heavy construction or congestion.";
+    if (sensors.temp > 32) return "High thermal stress. Heat island effect detected in this sector.";
+    return "Multi-sensor correlation indicates a localized urban stress anomaly.";
+  } else if (stressIndex > 55) {
+    return "Elevated activity levels. Monitoring for potential ordinance threshold breach.";
+  }
+  return "Sensing parameters nominal. No immediate infrastructure intervention required.";
+}
+
 exports.getLive = async (req, res) => {
   try {
     if (USE_MOCK) {
@@ -79,22 +90,27 @@ exports.getLive = async (req, res) => {
       ORDER BY node_id, time DESC
     `);
     
-    const nodes = result.rows.map(row => ({
-      nodeId: row.node_id,
-      name: row.name,
-      coordinates: [parseFloat(row.longitude), parseFloat(row.latitude)],
-      sensors: {
+    const nodes = result.rows.map(row => {
+      const sensors = {
         noise: parseFloat(row.noise),
         temp: parseFloat(row.temperature),
         airQuality: row.air_quality,
         crowd: row.crowd_density
-      },
-      stressIndex: row.stress_index,
-      isAnomaly: row.stress_index > 80,
-      timestamp: new Date(row.time).getTime(),
-      sector: row.sector,
-      zoneType: row.zone_type
-    }));
+      };
+      const stressIndex = row.stress_index;
+      return {
+        nodeId: row.node_id,
+        name: row.name,
+        coordinates: [parseFloat(row.longitude), parseFloat(row.latitude)],
+        sensors,
+        stressIndex,
+        isAnomaly: stressIndex > 80,
+        aiExplanation: generateExplanation(stressIndex, sensors),
+        timestamp: new Date(row.time).getTime(),
+        sector: row.sector,
+        zoneType: row.zone_type
+      };
+    });
     
     res.json(nodes);
   } catch (err) {

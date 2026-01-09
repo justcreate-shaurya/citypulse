@@ -57,6 +57,17 @@ function initMockData() {
   console.log(`Mock mode: Generated ${mockData.readings.length} readings`);
 }
 
+function generateExplanation(data, node) {
+  if (data.stress_index > 80) {
+    if (data.noise > 85) return "Critical noise levels detected. Likely heavy construction or congestion.";
+    if (data.temperature > 32) return "High thermal stress. Heat island effect detected in this sector.";
+    return "Multi-sensor correlation indicates a localized urban stress anomaly.";
+  } else if (data.stress_index > 55) {
+    return "Elevated activity levels. Monitoring for potential ordinance threshold breach.";
+  }
+  return "Sensing parameters nominal. No immediate infrastructure intervention required.";
+}
+
 function getLiveData() {
   const now = new Date();
   return nodes.map(node => {
@@ -73,6 +84,7 @@ function getLiveData() {
       },
       stressIndex: data.stress_index,
       isAnomaly: data.stress_index > 80,
+      aiExplanation: generateExplanation(data, node),
       timestamp: now.getTime(),
       sector: node.sector,
       zoneType: node.zone_type
