@@ -2,18 +2,27 @@ import { useState, useEffect, useRef } from 'react';
 import { Waves, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { NodeData, ActivityLogEntry, HistoricalDataPoint } from './lib/types';
-import { 
-  sensorNodes, 
-  generateMockNodeData, 
-  generateActivityLog, 
-  generateHistoricalData 
-} from './lib/mockData';
+import { apiService, LiveNodeData } from './lib/api';
+import { generateActivityLog } from './lib/mockData';
 
 // Components
 import { GlobalPulseMap } from './components/GlobalPulseMap';
 import { ActivityFeed } from './components/ActivityFeed';
 import { NodeIntelligence } from './components/NodeIntelligence';
 import { HistoricalTrend } from './components/HistoricalTrend';
+
+// Convert API response to NodeData format
+function toNodeData(apiNode: LiveNodeData): NodeData {
+  return {
+    nodeId: apiNode.nodeId,
+    coordinates: apiNode.coordinates,
+    sensors: apiNode.sensors,
+    stressIndex: apiNode.stressIndex,
+    isAnomaly: apiNode.isAnomaly,
+    aiExplanation: (apiNode as any).aiExplanation || 'Monitoring...',
+    timestamp: apiNode.timestamp,
+  };
+}
 
 export default function App() {
   const [nodeDataMap, setNodeDataMap] = useState<Map<string, NodeData>>(new Map());
@@ -32,56 +41,86 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // 2. Initial Data Load
+  // 2. Initial Data Load from API
   useEffect(() => {
-    const initialData = new Map<string, NodeData>();
-    const initialLog: ActivityLogEntry[] = [];
+    const fetchInitialData = async () => {
+      try {
+        const liveData = await apiService.getLiveData();
+        const initialData = new Map<string, NodeData>();
+        const initialLog: ActivityLogEntry[] = [];
+        
+        liveData.forEach((apiNode) => {
+          const data = toNodeData(apiNode);
+          initialData.set(data.nodeId, data);
+          initialLog.push(generateActivityLog(data));
+        });
+        
+        setNodeDataMap(initialData);
+        setActivityLog(initialLog.reverse());
+        
+        const firstNode = initialData.values().next().value;
+        if (firstNode) {
+          setSelectedNode(firstNode);
+          // Fetch historical data from API
+          try {
+            const history = await apiService.getHistory(firstNode.nodeId, 6);
+            const histData: HistoricalDataPoint[] = history.map(h => ({
+              timestamp: h.timestamp,
+              stressIndex: h.stressIndex,
+              noise: h.noise,
+              temp: h.temp,
+              airQuality: h.airQuality,
+              crowd: h.crowd,
+            }));
+            setHistoricalData(histData);
+          } catch (e) {
+            console.warn('Failed to fetch history:', e);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch live data:', error);
+      }
+    };
     
-    sensorNodes.forEach((node) => {
-      const data = generateMockNodeData(node.id, node.coordinates);
-      initialData.set(node.id, data);
-      initialLog.push(generateActivityLog(data));
-    });
-    
-    setNodeDataMap(initialData);
-    setActivityLog(initialLog.reverse());
-    
-    const firstNode = initialData.get(sensorNodes[0].id);
-    if (firstNode) {
-      setSelectedNode(firstNode);
-      setHistoricalData(generateHistoricalData(firstNode, []));
-    }
+    fetchInitialData();
   }, []);
 
-  // 3. Real-time Data Polling Loop
+  // 3. Real-time Data Polling from API
   useEffect(() => {
-    const interval = setInterval(() => {
-      const updatedMap = new Map(nodeDataMap);
-      const newLogEntries: ActivityLogEntry[] = [];
-      
-      // Randomly update 2 nodes to simulate network activity
-      const randomIndices = Array.from({length: 2}, () => Math.floor(Math.random() * sensorNodes.length));
-      
-      randomIndices.forEach(idx => {
-        const nodeRef = sensorNodes[idx];
-        const newData = generateMockNodeData(nodeRef.id, nodeRef.coordinates);
-        updatedMap.set(nodeRef.id, newData);
-        newLogEntries.push(generateActivityLog(newData));
-
-        // Trigger Alert if Critical Anomaly (>80 Stress)
-        if (newData.isAnomaly && !previousAnomaliesRef.current.has(newData.nodeId)) {
-          triggerAnomalyEffects(newData);
-        }
+    const interval = setInterval(async () => {
+      try {
+        const liveData = await apiService.getLiveData();
+        const updatedMap = new Map<string, NodeData>();
+        const newLogEntries: ActivityLogEntry[] = [];
         
-        if (!newData.isAnomaly) previousAnomaliesRef.current.delete(newData.nodeId);
-        if (selectedNode?.nodeId === nodeRef.id) {
-          setSelectedNode(newData);
-          setHistoricalData(prev => generateHistoricalData(newData, prev));
-        }
-      });
+        liveData.forEach((apiNode) => {
+          const newData = toNodeData(apiNode);
+          updatedMap.set(newData.nodeId, newData);
+          
+          // Only log if data changed significantly
+          const oldData = nodeDataMap.get(newData.nodeId);
+          if (!oldData || Math.abs(oldData.stressIndex - newData.stressIndex) > 2) {
+            newLogEntries.push(generateActivityLog(newData));
+          }
 
-      setNodeDataMap(updatedMap);
-      setActivityLog(prev => [...newLogEntries.reverse(), ...prev].slice(0, 50));
+          // Trigger Alert if Critical Anomaly (>80 Stress)
+          if (newData.isAnomaly && !previousAnomaliesRef.current.has(newData.nodeId)) {
+            triggerAnomalyEffects(newData);
+          }
+          
+          if (!newData.isAnomaly) previousAnomaliesRef.current.delete(newData.nodeId);
+          if (selectedNode?.nodeId === newData.nodeId) {
+            setSelectedNode(newData);
+          }
+        });
+
+        setNodeDataMap(updatedMap);
+        if (newLogEntries.length > 0) {
+          setActivityLog(prev => [...newLogEntries.reverse(), ...prev].slice(0, 50));
+        }
+      } catch (error) {
+        console.warn('Failed to poll live data:', error);
+      }
     }, 3000);
 
     return () => clearInterval(interval);
@@ -132,11 +171,26 @@ export default function App() {
     setTimeout(() => setAnomalyAlert(null), 4000);
   };
 
-  const handleNodeSelect = (nodeId: string) => {
+  const handleNodeSelect = async (nodeId: string) => {
     const node = nodeDataMap.get(nodeId);
     if (node) {
       setSelectedNode(node);
-      setHistoricalData(generateHistoricalData(node, []));
+      // Fetch historical data from API
+      try {
+        const history = await apiService.getHistory(nodeId, 6);
+        const histData: HistoricalDataPoint[] = history.map(h => ({
+          timestamp: h.timestamp,
+          stressIndex: h.stressIndex,
+          noise: h.noise,
+          temp: h.temp,
+          airQuality: h.airQuality,
+          crowd: h.crowd,
+        }));
+        setHistoricalData(histData);
+      } catch (e) {
+        console.warn('Failed to fetch history:', e);
+        setHistoricalData([]);
+      }
     }
   };
 
