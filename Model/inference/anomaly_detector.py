@@ -3,6 +3,7 @@ import joblib
 import os
 from datetime import datetime
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,19 +12,25 @@ from config import MOHALI_CONFIG, get_baseline, get_time_slot
 class AnomalyDetector:
     def __init__(self):
         self.model = None
-        self.model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'anomaly_model.pkl')
+        self.scaler = None
+        self.models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+        self.model_path = os.path.join(self.models_dir, 'anomaly_model.pkl')
+        self.scaler_path = os.path.join(self.models_dir, 'anomaly_scaler.pkl')
         self._load_or_init_model()
     
     def _load_or_init_model(self):
         if os.path.exists(self.model_path):
             self.model = joblib.load(self.model_path)
+            if os.path.exists(self.scaler_path):
+                self.scaler = joblib.load(self.scaler_path)
         else:
             self.model = IsolationForest(
-                n_estimators=100,
-                contamination=0.1,
+                n_estimators=200,
+                contamination=0.02,
                 random_state=42,
                 n_jobs=-1
             )
+            self.scaler = StandardScaler()
     
     def detect(self, reading):
         node_id = reading.get('node_id')
@@ -47,26 +54,46 @@ class AnomalyDetector:
         aqi_dev = air_quality - baseline['aqi']
         crowd_dev = crowd_density - baseline['crowd']
         
+        # Use trained model if available
+        ml_anomaly = False
+        ml_score = 0.5
+        
+        if self.model is not None and self.scaler is not None:
+            try:
+                X = np.array([[noise, temperature, air_quality, crowd_density]])
+                X_scaled = self.scaler.transform(X)
+                prediction = self.model.predict(X_scaled)[0]
+                score = -self.model.decision_function(X_scaled)[0]
+                ml_anomaly = prediction == -1
+                ml_score = min(max(score, 0), 1)
+            except Exception:
+                pass
+        
+        # Threshold-based signal detection
         if noise > thresholds['noise_critical'] or noise_dev > 15:
             signals.append('noise')
-            deviations['noise'] = {'value': noise, 'baseline': baseline['noise'], 'deviation': noise_dev}
+            deviations['noise'] = {'value': noise, 'baseline': baseline['noise'], 'deviation': round(noise_dev, 1)}
         
         if temperature > thresholds['temp_critical'] or temp_dev > 5:
             signals.append('heat')
-            deviations['heat'] = {'value': temperature, 'baseline': baseline['temp'], 'deviation': temp_dev}
+            deviations['heat'] = {'value': temperature, 'baseline': baseline['temp'], 'deviation': round(temp_dev, 1)}
         
         if air_quality > thresholds['aqi_critical'] or aqi_dev > 30:
             signals.append('air_quality')
-            deviations['air_quality'] = {'value': air_quality, 'baseline': baseline['aqi'], 'deviation': aqi_dev}
+            deviations['air_quality'] = {'value': air_quality, 'baseline': baseline['aqi'], 'deviation': round(aqi_dev, 1)}
         
         if crowd_density > thresholds['crowd_critical'] or crowd_dev > 10:
             signals.append('crowd')
-            deviations['crowd'] = {'value': crowd_density, 'baseline': baseline['crowd'], 'deviation': crowd_dev}
+            deviations['crowd'] = {'value': crowd_density, 'baseline': baseline['crowd'], 'deviation': round(crowd_dev, 1)}
         
-        is_anomaly = stress_index > thresholds['stress_critical'] or len(signals) >= 2
-        anomaly_score = min(stress_index / 100.0, 0.99)
+        # Combine ML and rule-based detection
+        is_anomaly = ml_anomaly or stress_index > thresholds['stress_critical'] or len(signals) >= 2
         
-        explanation = self._generate_explanation(signals, deviations, time_slot, node_id)
+        # Blend scores
+        rule_score = min(stress_index / 100.0, 0.99)
+        anomaly_score = (ml_score * 0.6 + rule_score * 0.4) if ml_anomaly else rule_score
+        
+        explanation = self._generate_explanation(signals, deviations, time_slot, node_id, stress_index)
         
         return {
             'is_anomaly': is_anomaly,
@@ -75,36 +102,40 @@ class AnomalyDetector:
             'explanation': explanation,
             'deviations': deviations,
             'baseline': baseline,
-            'time_context': time_slot
+            'time_context': time_slot,
+            'stress_index': stress_index
         }
     
-    def _generate_explanation(self, signals, deviations, time_slot, node_id):
+    def _generate_explanation(self, signals, deviations, time_slot, node_id, stress_index):
         node_info = MOHALI_CONFIG['nodes'].get(node_id, {})
         location = node_info.get('name', 'this sector')
         
-        if not signals:
+        if not signals and stress_index <= 55:
             return f"Sensing parameters nominal for {time_slot} at {location}. No intervention required."
         
-        explanations = []
+        if not signals and stress_index > 55:
+            return f"Elevated urban stress ({stress_index}) at {location} during {time_slot}. Monitoring for threshold breach."
+        
+        parts = []
         
         if 'noise' in signals:
             dev = deviations['noise']
-            explanations.append(f"Noise {dev['value']} dB is {dev['deviation']:.0f} dB above Mohali {time_slot} baseline")
+            parts.append(f"Noise {dev['value']} dB (+{dev['deviation']} dB from {time_slot} baseline)")
         
         if 'heat' in signals:
             dev = deviations['heat']
-            explanations.append(f"Temperature {dev['value']}C indicates thermal stress ({dev['deviation']:.1f}C above baseline)")
+            parts.append(f"Temperature {dev['value']}C (+{dev['deviation']}C thermal stress)")
         
         if 'air_quality' in signals:
             dev = deviations['air_quality']
-            explanations.append(f"AQI {dev['value']} exceeds safe levels (baseline: {dev['baseline']})")
+            parts.append(f"AQI {dev['value']} (+{dev['deviation']} above safe levels)")
         
         if 'crowd' in signals:
             dev = deviations['crowd']
-            explanations.append(f"Crowd density {dev['value']} above typical {time_slot} levels")
+            parts.append(f"Crowd density {dev['value']} (+{dev['deviation']} above typical)")
         
-        base = f"Alert at {location}: "
-        return base + ". ".join(explanations)
+        severity = "CRITICAL" if stress_index > 80 else "ELEVATED"
+        return f"{severity} at {location}: " + "; ".join(parts)
     
     def train(self, data=None):
         if data is None:
