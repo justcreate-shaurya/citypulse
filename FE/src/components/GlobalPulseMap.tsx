@@ -1,15 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { NodeData } from '../lib/types';
-
-// Get Mapbox token from environment variable or use empty string as fallback
-const MAPBOX_TOKEN = typeof import.meta !== 'undefined' && import.meta.env?.VITE_MAPBOX_TOKEN 
-  ? import.meta.env.VITE_MAPBOX_TOKEN 
-  : '';
-
-// Check if token looks valid (should start with pk. and be reasonably long)
-const isValidToken = MAPBOX_TOKEN && MAPBOX_TOKEN.startsWith('pk.') && MAPBOX_TOKEN.length > 50 && !MAPBOX_TOKEN.includes('example');
 
 interface GlobalPulseMapProps {
   nodes: NodeData[];
@@ -19,45 +11,68 @@ interface GlobalPulseMapProps {
 
 export function GlobalPulseMap({ nodes, selectedNodeId, onNodeClick }: GlobalPulseMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
-  const markers = useRef<{ [key: string]: mapboxgl.Marker }>({});
+  const map = useRef<maplibregl.Map | null>(null);
+  const markers = useRef<{ [key: string]: maplibregl.Marker }>({});
   const [mapError, setMapError] = useState(false);
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   // 1. Initialize Map
   useEffect(() => {
     if (map.current || !mapContainer.current) return;
 
-    // Check if we have a valid token
+    // Get MapTiler token from environment variable
+    const MAPTILER_TOKEN = import.meta.env?.VITE_MAPTILER_TOKEN || '';
+    
+    // Check if token looks valid (not a placeholder)
+    const isValidToken = MAPTILER_TOKEN && 
+      MAPTILER_TOKEN.length > 10 && 
+      !MAPTILER_TOKEN.includes('your_') &&
+      !MAPTILER_TOKEN.includes('_here');
+
     if (!isValidToken) {
-      console.warn('Mapbox token not found or invalid. Using fallback visualization.');
+      console.warn('Using fallback visualization. MapTiler token not found or invalid.');
       setMapError(true);
       return;
     }
 
     try {
-      mapboxgl.accessToken = MAPBOX_TOKEN;
-
-      map.current = new mapboxgl.Map({
+      console.log('Initializing MapTiler with token:', MAPTILER_TOKEN.substring(0, 5) + '...');
+      
+      map.current = new maplibregl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/dark-v11',
+        style: `https://api.maptiler.com/maps/dataviz-dark/style.json?key=${MAPTILER_TOKEN}`,
         center: [76.7179, 30.7046], // Centered on Mohali
         zoom: 12,
-        pitch: 45, // 3D Perspective
-        antialias: true
+        pitch: 45 // 3D Perspective
       });
 
-      map.current.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
+      map.current.on('load', () => {
+        console.log('MapTiler map loaded successfully');
+        setMapLoaded(true);
+      });
+
+      map.current.on('error', (e) => {
+        console.error('MapTiler error:', e);
+        setMapError(true);
+      });
+
+      map.current.addControl(new maplibregl.NavigationControl(), 'bottom-right');
     } catch (error) {
-      console.error('Failed to initialize Mapbox:', error);
+      console.error('Failed to initialize MapTiler:', error);
       setMapError(true);
     }
 
-    return () => map.current?.remove();
+    return () => {
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
+    };
   }, []);
 
   // 2. Sync Markers with Node Data
   useEffect(() => {
-    if (!map.current) return;
+    if (!map.current || !mapLoaded) return;
 
     nodes.forEach((node) => {
       const isSelected = selectedNodeId === node.nodeId;
@@ -88,7 +103,7 @@ export function GlobalPulseMap({ nodes, selectedNodeId, onNodeClick }: GlobalPul
 
         el.addEventListener('click', () => onNodeClick(node.nodeId));
 
-        markers.current[node.nodeId] = new mapboxgl.Marker(el)
+        markers.current[node.nodeId] = new maplibregl.Marker({ element: el })
           .setLngLat(node.coordinates as [number, number])
           .addTo(map.current!);
       }
@@ -112,7 +127,7 @@ export function GlobalPulseMap({ nodes, selectedNodeId, onNodeClick }: GlobalPul
         markerEl.style.zIndex = '1';
       }
     });
-  }, [nodes, selectedNodeId]);
+  }, [nodes, selectedNodeId, mapLoaded]);
 
   // Fallback visualization when Mapbox is not available
   if (mapError) {
@@ -289,7 +304,7 @@ export function GlobalPulseMap({ nodes, selectedNodeId, onNodeClick }: GlobalPul
         {/* Info badge */}
         <div className="absolute bottom-4 left-4 bg-[#161B22]/80 border border-[#FFB800]/30 rounded px-3 py-2">
           <p className="text-[10px] text-[#FFB800] font-mono">
-            ⚠ Simplified view • Set VITE_MAPBOX_TOKEN for full map
+            ⚠ Simplified view • Set VITE_MAPTILER_TOKEN for full map
           </p>
         </div>
       </div>
@@ -297,11 +312,22 @@ export function GlobalPulseMap({ nodes, selectedNodeId, onNodeClick }: GlobalPul
   }
 
   return (
-    <div className="w-full h-full relative">
-      <div ref={mapContainer} className="absolute inset-0" />
+    <div className="w-full h-full relative" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+      <div 
+        ref={mapContainer} 
+        className="maplibregl-map" 
+        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} 
+      />
+      
+      {/* Loading indicator */}
+      {!mapLoaded && !mapError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0B0E14]" style={{ zIndex: 10 }}>
+          <div className="text-[#00F5FF] font-mono text-sm animate-pulse">Loading Map...</div>
+        </div>
+      )}
       
       {/* Map Overlay HUD */}
-      <div className="absolute top-4 left-4 pointer-events-none space-y-2">
+      <div className="absolute top-4 left-4 pointer-events-none space-y-2 z-10">
         <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg">
           <h4 className="text-[10px] font-mono text-gray-400 mb-2 uppercase tracking-widest">Map Legend</h4>
           <div className="space-y-1.5">

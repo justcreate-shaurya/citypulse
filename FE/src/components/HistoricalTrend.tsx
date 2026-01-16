@@ -10,10 +10,10 @@ interface HistoricalTrendProps {
 export function HistoricalTrend({ data, selectedNode }: HistoricalTrendProps) {
   const formatTime = (timestamp: number) => {
     const date = new Date(timestamp);
-    return date.toLocaleTimeString('en-US', { 
-      hour12: false,
+    return date.toLocaleTimeString('en-GB', { 
+      hour: '2-digit',
       minute: '2-digit',
-      second: '2-digit'
+      hour12: false
     });
   };
 
