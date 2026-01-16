@@ -22,7 +22,7 @@ MIT License
 - Node.js (v18.0.0 or higher)
 - Python (v3.11 or higher)
 - Docker and Docker Compose
-- A Mapbox Access Token (Available at mapbox.com)
+- A MapTiler Access Token (Available at maptiler.com)
 
 ### Option 1: Docker (Recommended)
 
